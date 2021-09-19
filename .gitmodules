@@ -1,0 +1,3 @@
+[submodule "external/thread_pool"]
+	path = external/thread_pool
+	url = git@github.com:rvaser/thread_pool.git
