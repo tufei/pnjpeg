@@ -739,6 +739,7 @@ int main(int argc, char *argv[])
     }
 
     context jpg_ctx;
+    memset(&jpg_ctx, 0, sizeof(context));
 
     std::ifstream ifs(in_filename, std::ios::binary | std::ios::ate);
     if (false == ifs.is_open())
@@ -767,6 +768,7 @@ int main(int argc, char *argv[])
     uint32_t bitmask = 0;
     vector<future<void>> futures;
 
+    bool no_rst = false;
     while (length && 15 != bitmask)
     {
         if (2 > length || (bitstream[0] != 0xFF))
@@ -795,6 +797,11 @@ int main(int argc, char *argv[])
                                        std::ref(jpg_ctx)));
                 bitmask |= 2;
                 break;
+            case 0xDA:
+                cout << "No DRI/RST in file\n";
+                no_rst = true;
+                bitstream -= 2; length += 2;
+                break;
             case 0xDB:
                 cout << "DQT buffer = "
                      << static_cast<const void *>(bitstream)
@@ -822,6 +829,9 @@ int main(int argc, char *argv[])
                 }
                 break;
         }
+
+        if (no_rst) break;
+
         bitstream += marker_len; length -= marker_len;
     }
 
@@ -839,7 +849,7 @@ int main(int argc, char *argv[])
         c.pixels = out_buffer[i].get();
     }
 
-#if 0
+#if 1
     cout << "RST interval = " << jpg_ctx.rstinterval << '\n';
     cout << "width = " << jpg_ctx.width << ", "
          << "height = " << jpg_ctx.height << '\n';
@@ -851,7 +861,8 @@ int main(int argc, char *argv[])
         const component &c = jpg_ctx.comp[i];
         cout << "Component " << i << ":\n";
         cout << "\tssx = " << c.ssx << ", ssy = " << c.ssy << '\n';
-        cout << "\tw = " << c.width << ", h = " << c.height << '\n';
+        cout << "\tw = " << c.width << ", h = " << c.height << ", "
+             << "stride = " << c.stride << '\n';
         cout << "\tqtsel = " << c.qtsel << ", "
              << "acsel = " << c.actabsel << ", "
              << "dcsel = " << c.dctabsel << '\n';
@@ -921,45 +932,53 @@ int main(int argc, char *argv[])
     }
 #endif
 
-    int mbxy = 0;
-    int curr_rst = 7;
-
-    futures.resize(0);
-    while (length)
+    if (no_rst)
     {
-        auto blocks = seek_rst(bitstream, length);
-        int num_blocks = ((8 + blocks.first - curr_rst) & 7) *
-                         jpg_ctx.rstinterval;
+        int num_blocks = jpg_ctx.mbheight * jpg_ctx.mbwidth;
+        decode_blks(bitstream, length, jpg_ctx, 0, num_blocks);
+    }
+    else
+    {
+        int mbxy = 0;
+        int curr_rst = 7;
 
-        if (0xFF == blocks.first)
+        futures.resize(0);
+        while (length)
         {
-            num_blocks = jpg_ctx.mbwidth * jpg_ctx.mbheight - mbxy;
-        }
+            auto blocks = seek_rst(bitstream, length);
+            int num_blocks = ((8 + blocks.first - curr_rst) & 7) *
+                             jpg_ctx.rstinterval;
+
+            if (0xFF == blocks.first)
+            {
+                num_blocks = jpg_ctx.mbwidth * jpg_ctx.mbheight - mbxy;
+            }
 
 #if 0
-        format_to(cout, "BLOCKS buffer = {1}, length = {2}\n",
-                  bitstream, blocks.second) << flush;
-        format_to(cout, "BLOCKS start_mb = {1}, length_mb = {2}\n",
-                  mbxy, num_blocks) << flush;
+            format_to(cout, "BLOCKS buffer = {1}, length = {2}\n",
+                      bitstream, blocks.second) << flush;
+            format_to(cout, "BLOCKS start_mb = {1}, length_mb = {2}\n",
+                      mbxy, num_blocks) << flush;
 #endif
 
-        futures.emplace_back(
-            thread_pool.Submit(decode_blks, bitstream, blocks.second,
-                               std::cref(jpg_ctx), mbxy, num_blocks));
-        curr_rst = blocks.first;
-        mbxy += num_blocks;
+            futures.emplace_back(
+                thread_pool.Submit(decode_blks, bitstream, blocks.second,
+                                   std::cref(jpg_ctx), mbxy, num_blocks));
+            curr_rst = blocks.first;
+            mbxy += num_blocks;
 
-        bitstream += blocks.second + 2;
-        length -= blocks.second + 2;
-        if (0xFF == blocks.first)
-        {
-            cout << "EOI reached\n";
+            bitstream += blocks.second + 2;
+            length -= blocks.second + 2;
+            if (0xFF == blocks.first)
+            {
+                cout << "EOI reached\n";
+            }
         }
-    }
 
-    for (const auto &f : futures)
-    {
-        f.wait();
+        for (const auto &f : futures)
+        {
+            f.wait();
+        }
     }
 
     std::ofstream ofs(out_filename, std::ios::binary);
@@ -1002,12 +1021,14 @@ int main(int argc, char *argv[])
     for (int i = 0; i < jpg_ctx.ncomp; ++i)
     {
         component &c = jpg_ctx.comp[i];
-        for (int j = 0; j < height / c.ssy; ++j)
+        const int scale_w = jpg_ctx.comp[0].ssx / c.ssx;
+        const int scale_h = jpg_ctx.comp[0].ssy / c.ssy;
+        for (int j = 0; j < (height + scale_h - 1) / scale_h; ++j)
         {
-            const int start_offset = (offset_h / c.ssy + j) * c.stride +
-                                     offset_w / c.ssx;
+            const int start_offset = (offset_h / scale_h + j) * c.stride +
+                                     offset_w / scale_w;
             ofs.write(reinterpret_cast<const char *>(&c.pixels[start_offset]),
-                      width / c.ssx);
+                      (width + scale_w - 1) / scale_w);
         }
     }
     ofs.close();

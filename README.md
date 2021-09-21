@@ -19,12 +19,12 @@ as a submodule.
 
 ## Limitations
 
-* It will not run faster if a JPEG file does not use the RST feature
+* It will not run faster if a JPEG file does not use the RST feature.
 * It will throw exceptions if there are tables updated after SOS marker, it
 should be straight forward to create a new copy of context and pass it to new
 tasks, but I chose not to implement for a demonstration program.
 * Output is in the original coding color space in planar format, which is most
-likely in YCbCr4:2:0 or YCbCr4:4:4. An raw YUV buffer viewer can be used to
+likely in YCbCr4:2:0 or YCbCr4:4:4. A raw YUV buffer viewer can be used to
 view the content.  Most of the times, I am interested in feeding the dump to a
 video encoder.
 
