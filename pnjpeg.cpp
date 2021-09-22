@@ -24,6 +24,7 @@
 
 // Include statements.
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <cassert>
 #include <cstddef>
@@ -426,13 +427,10 @@ void decode_dri(const uint8_t *bitstream, int size, context &ctx)
     //cout << "DRI done\n";
 }
 
-void decode_dqt(const uint8_t *bitstream, int size, context &ctx)
+void decode_dqt(const uint8_t *bitstream, int size, context &ctx,
+                atomic<int *> &qtavail)
 {
     uint32_t length = decode_len(bitstream, size);
-
-    ctx.qtavail = 0;
-
-    for (auto &t : ctx.qtab) t.fill(0);
 
     while (length >= 65)
     {
@@ -441,7 +439,7 @@ void decode_dqt(const uint8_t *bitstream, int size, context &ctx)
         {
             throw runtime_error("invalid semantics in decoding DQT");
         }
-        ctx.qtavail |= 1 << i;
+        *qtavail |= 1 << i;
         std::copy_n(&bitstream[i + 1], 64, ctx.qtab[i].begin());
         bitstream += 65; length -= 65;
     }
@@ -490,8 +488,6 @@ void decode_dht(const uint8_t *bitstream, int size, context &ctx)
     uint32_t length = decode_len(bitstream, size);
 
     std::array<uint8_t, 16> counts;
-
-    for (auto &t : ctx.vlctab) t.fill({0, 0});
 
     while (length >= 17)
     {
@@ -740,6 +736,8 @@ int main(int argc, char *argv[])
 
     context jpg_ctx;
     memset(&jpg_ctx, 0, sizeof(context));
+    for (auto &qt : jpg_ctx.qtab) qt.fill(0);
+    for (auto &vt : jpg_ctx.vlctab) vt.fill({0, 0});
 
     std::ifstream ifs(in_filename, std::ios::binary | std::ios::ate);
     if (false == ifs.is_open())
@@ -766,6 +764,7 @@ int main(int argc, char *argv[])
     bitstream += 2; length -= 2;
 
     uint32_t bitmask = 0;
+    atomic<int *> qtavail{&jpg_ctx.qtavail};
     vector<future<void>> futures;
 
     bool no_rst = false;
@@ -808,7 +807,7 @@ int main(int argc, char *argv[])
                      << ", length = " << marker_len << '\n';
                 futures.emplace_back(
                     thread_pool.Submit(decode_dqt, bitstream, marker_len,
-                                       std::ref(jpg_ctx)));
+                                       std::ref(jpg_ctx), std::ref(qtavail)));
                 bitmask |= 4;
                 break;
             case 0xDD:
@@ -851,6 +850,7 @@ int main(int argc, char *argv[])
 
 #if 1
     cout << "RST interval = " << jpg_ctx.rstinterval << '\n';
+    cout << "QTable availability = " << jpg_ctx.qtavail << '\n';
     cout << "width = " << jpg_ctx.width << ", "
          << "height = " << jpg_ctx.height << '\n';
     cout << "mbwidth = " << jpg_ctx.mbwidth << ", "
